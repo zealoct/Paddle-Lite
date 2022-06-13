@@ -173,7 +173,7 @@ LITE_THREAD_LOCAL size_t TargetWrapperXPU::local_gm_size{
 LITE_THREAD_LOCAL void* TargetWrapperXPU::local_l3_ptr_{nullptr};
 void* TargetWrapperXPU::shared_l3_ptr_{nullptr};
 size_t TargetWrapperXPU::shared_l3_size{0};
-bool TargetWrapperXPU::enable_multi_stream_{false};
+bool TargetWrapperXPU::enable_multi_stream_{true};
 LITE_THREAD_LOCAL std::vector<XPUL3CacheBlock*> TargetWrapperXPU::l3_block_dict;
 // l3 mutex
 std::mutex TargetWrapperXPU::mutex_l3_;
