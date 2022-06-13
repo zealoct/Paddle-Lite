@@ -30,6 +30,16 @@
 #include "lite/api/paddle_use_passes.h"
 #endif
 
+#include <condition_variable>
+#include <queue>
+#include <unordered_set>
+#include <thread>
+#include <unistd.h>
+#include <sys/time.h>
+#include <sys/syscall.h>
+#define gettid() syscall(SYS_gettid)
+extern int xpu_current_device(int* devid);
+
 #if (defined LITE_WITH_X86) && (defined PADDLE_WITH_MKLML) && \
     !(defined LITE_ON_MODEL_OPTIMIZE_TOOL)
 #if !defined(__APPLE__)
@@ -267,11 +277,138 @@ std::vector<std::string> CxxPaddleApiImpl::GetOutputNames() {
   return raw_predictor_->GetOutputNames();
 }
 
+/////// hjc-hack wait queue ////////////
+//
+
+int XPU_MAX_RUN = 0;
+struct hjc_wq_st {
+  //std::queue<int> q;
+  std::queue<std::tuple<int, std::condition_variable *>> q;
+  std::mutex qlock;
+
+  std::unordered_set<int> r;
+  std::mutex rlock;
+  //std::condition_variable cond;
+};
+
+// one for each device
+struct hjc_wq_st hjc_wq[16];
+int hjc_lock_en = 2;
+
+void hjc_lock() {
+  if (hjc_lock_en == 2) {
+    if (std::getenv("HJC_LOCK_EN")) {
+      hjc_lock_en = 1;
+    } else {
+      hjc_lock_en = 0;
+    }
+  }
+
+  if (!hjc_lock_en) {
+    return;
+  }
+
+  int tid = gettid();
+
+  if (XPU_MAX_RUN == 0) {
+    if (std::getenv("XPU_MAX_RUN")) {
+      XPU_MAX_RUN = atoi(std::getenv("XPU_MAX_RUN"));
+    } else {
+      XPU_MAX_RUN = 1;
+    }
+  }
+
+  int devid = 0;
+  xpu_current_device(&devid);
+  if (devid < 0 || devid > 15) {
+    LOG(WARNING) << "invalid devid " << devid;
+    return;
+  }
+  struct hjc_wq_st *wq = &hjc_wq[devid];
+
+  std::unique_lock<std::mutex> lk(wq->rlock);
+  if (wq->r.size() < XPU_MAX_RUN) {
+    // no one is running, return directly
+    wq->r.insert(tid);
+    LOG(WARNING) << "hjc xpu" << devid << " T(" << tid << ") run directly, #run = " << wq->r.size();
+    lk.unlock();
+    return;
+  }
+
+  std::condition_variable cond;
+  LOG(WARNING) << "hjc xpu" << devid << " T(" << tid << ") wait in queue";
+
+  // someone is running, wait in the queue
+  wq->qlock.lock();
+  wq->q.push(std::make_tuple(tid, &cond));
+  wq->qlock.unlock();
+
+  cond.wait(lk, [wq, devid, tid] { 
+      LOG(WARNING) << "hjc xpu" << devid << " T(" << tid << ") wokeandsee";
+      return (wq->r.count(tid) > 0); 
+    });
+
+  LOG(WARNING) << "hjc xpu" << devid << " T(" << tid << ") run";
+
+  lk.unlock();
+}
+
+void hjc_unlock() {
+  if (!hjc_lock_en) {
+    return;
+  }
+  
+  int tid = gettid();
+
+  int devid = 0;
+  xpu_current_device(&devid);
+  if (devid < 0 || devid > 15) {
+    LOG(WARNING) << "invalid devid " << devid;
+    return;
+  }
+  struct hjc_wq_st *wq = &hjc_wq[devid];
+
+  wq->rlock.lock();
+  wq->qlock.lock();
+
+  wq->r.erase(tid);
+
+  std::condition_variable *next_cond = NULL;
+  if (!wq->q.empty()) {
+    // set who's turn next
+    auto next = wq->q.front();
+    wq->r.insert(std::get<0>(next));
+    wq->q.pop();
+    next_cond = std::get<1>(next);
+    LOG(WARNING) << "hjc xpu" << devid << " T(" << tid << ") finish, wakeup " << std::get<0>(next);
+  } else {
+    LOG(WARNING) << "hjc xpu" << devid << " T(" << tid << ") finish, q empty";
+  }
+
+  wq->qlock.unlock();
+  wq->rlock.unlock();
+
+  if (next_cond) {
+    next_cond->notify_all();
+  }
+}
+
+#define timeval_to_us(tv) (((tv).tv_sec * 1000000ULL) + (tv).tv_usec)
+
+//
+//////// end //////////////////
+
 void CxxPaddleApiImpl::Run() {
 #ifdef LITE_WITH_ARM
   lite::DeviceInfo::Global().SetRunMode(mode_, threads_);
 #endif
+  struct timeval t0, t1;
+  hjc_lock();
+  gettimeofday(&t0, NULL);
   raw_predictor_->Run();
+  gettimeofday(&t1, NULL);
+  LOG(INFO) << "hjc-timer: " << (timeval_to_us(t1) - timeval_to_us(t0)) / 1000.0 << " ms";
+  hjc_unlock();
 }
 
 std::shared_ptr<lite_api::PaddlePredictor> CxxPaddleApiImpl::Clone() {
