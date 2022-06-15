@@ -55,6 +55,13 @@ void XPUFcCompute::PrepareForRun() {
                                        sizeof(float) * max_ptr_size,
                                        IoDirection::HtoD);
     return;
+  } else {
+    float default_max = atof(std::getenv("HJC_DFT_MAX"));
+    std::vector<float> cpu_input_max(max_ptr_size, default_max);
+    lite::TargetWrapperXPU::MemcpySync(input_max_guard_->addr_,
+                                       cpu_input_max.data(),
+                                       sizeof(float) * max_ptr_size,
+                                       IoDirection::HtoD);
   }
 
   if (param.precision == "int31") {
@@ -89,9 +96,10 @@ void XPUFcCompute::Run() {
                           ? nullptr
                           : param.output_max->mutable_data<float>(TARGET(kXPU));
   const auto* bias = param.has_bias ? param.bias->data<float>() : nullptr;
-  const float* input_max =
-      quant_int8 ? reinterpret_cast<float*>(input_max_guard_->addr_)
-                 : (param.input_max ? param.input_max->data<float>() : nullptr);
+  // const float* input_max =
+  //     quant_int8 ? reinterpret_cast<float*>(input_max_guard_->addr_)
+  //                : (param.input_max ? param.input_max->data<float>() : nullptr);
+  const float* input_max = reinterpret_cast<float*>(input_max_guard_->addr_);
   xdnn::Activation_t act((xdnn::Activation_t::act_enum)param.act_type);
   if (param.act_type == 5) {
     act.leaky_alpha = param.act_param;
