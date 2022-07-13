@@ -56,7 +56,10 @@ void XPUFcCompute::PrepareForRun() {
                                        IoDirection::HtoD);
     return;
   } else {
-    float default_max = atof(std::getenv("HJC_DFT_MAX"));
+    float default_max = 255.0f;
+    if (std::getenv("HJC_DFT_MAX")) {
+      default_max = atof(std::getenv("HJC_DFT_MAX"));
+    }
     std::vector<float> cpu_input_max(max_ptr_size, default_max);
     lite::TargetWrapperXPU::MemcpySync(input_max_guard_->addr_,
                                        cpu_input_max.data(),

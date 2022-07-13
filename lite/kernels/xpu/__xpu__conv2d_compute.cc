@@ -64,13 +64,17 @@ void XPUConv2dCompute<T, PType>::PrepareForRun() {
           filter_ptr, filter_dims, false);
 
   hack_in_max_ = TargetWrapperXPU::MallocScratchPad(max_ptr_size * sizeof(float));
-  float default_max = atof(std::getenv("HJC_DFT_MAX"));
+
+  float default_max = 255.0f;
+  if (std::getenv("HJC_DFT_MAX")) {
+    default_max = atof(std::getenv("HJC_DFT_MAX"));
+  }
   std::vector<float> in_max_vector(max_ptr_size, default_max);
   lite::TargetWrapperXPU::MemcpySync(reinterpret_cast<float*>(hack_in_max_->addr_),
                                       in_max_vector.data(),
                                       max_ptr_size * sizeof(float),
                                       IoDirection::HtoD);
-  LOG(INFO) << "set maxptr " << hack_in_max_->addr_;
+  
 }
 
 template <typename T, PrecisionType PType>
@@ -100,7 +104,7 @@ void XPUConv2dCompute<T, PType>::Run() {
   // const float* input_max =
   //     param.input_max ? param.input_max->template data<float>() : nullptr;
   const float* input_max = reinterpret_cast<float*>(hack_in_max_->addr_);
-  LOG(INFO) << "use in maxptr " << input_max;
+  //LOG(INFO) << "use in maxptr " << input_max;
 
   xdnn::Activation_t act((xdnn::Activation_t::act_enum)act_type);
   if (act_type == 5) {
